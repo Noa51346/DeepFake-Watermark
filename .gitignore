@@ -5,7 +5,19 @@ __pycache__/
 
 # C extensions
 *.so
+# PyCharm files
+.idea/
 
+# Video and Media
+*.mp4
+*.avi
+*.mov
+frames/
+output/
+
+# Python Virtual Environment
+venv/
+.venv/
 # Distribution / packaging
 .Python
 build/
