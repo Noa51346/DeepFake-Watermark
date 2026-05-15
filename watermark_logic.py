@@ -23,10 +23,10 @@ def _password_to_key(password: str) -> bytes:
     return hashlib.sha256(password.encode()).digest()
 
 
-def _adaptive_strength(h: int, w: int, base: float = 27.0) -> float:
+def _adaptive_strength(h: int, w: int, base: float = 25.0) -> float:
     ref_area = 512 * 512
     area = h * w
-    return max(16.0, min(42.0, base * (ref_area / area) ** 0.25))
+    return max(15.0, min(40.0, base * (ref_area / area) ** 0.3))
 
 
 def _apply_ecc(data: bytes) -> bytes:
@@ -169,7 +169,7 @@ LAYER_B_BITS = 256
 
 
 def _embed_layer_b(cr: np.ndarray, bits: np.ndarray, seed: int,
-                   alpha: float = 1.5) -> np.ndarray:
+                   alpha: float = 1.2) -> np.ndarray:
     h, w = cr.shape
     cr_f = cr.astype(np.float64)
 
@@ -408,22 +408,14 @@ def encode_image(image_path: str, secret_data: str,
     # Sync markers first (on Y channel)
     ycrcb[:, :, 0] = _embed_sync_markers(ycrcb[:, :, 0], seed, strength + 10)
 
-    # Layer A on Y (luma) — DCT frequency domain
+    # Layer A on Y (luma)
     ycrcb[:, :, 0] = _embed_layer_a(ycrcb[:, :, 0], bits, seed, strength)
 
-    # Layer B on Cr (chroma) — Spread Spectrum
+    # Layer B on Cr (chroma) — first 256 bits
     short_bits = bits[:min(LAYER_B_BITS, len(bits))]
     ycrcb[:, :, 1] = _embed_layer_b(ycrcb[:, :, 1], short_bits, seed)
 
     result = cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2BGR)
-
-    # Layer C — Invisible QR code (spatial domain)
-    try:
-        from invisible_qr import embed_invisible_qr
-        result = embed_invisible_qr(result, secret_data, password, alpha=3.0)
-    except Exception:
-        pass  # Layer C is optional — graceful fallback
-
     cv2.imwrite(output_path, result, [cv2.IMWRITE_PNG_COMPRESSION, 0])
     return "✅ Watermark embedded successfully"
 
@@ -496,7 +488,7 @@ def remove_watermark(image_path: str, output_path: str,
     for i, bit in enumerate(bits_b):
         bit_rng = np.random.RandomState((seed ^ (i * 2654435761)) % (2**31))
         pn = bit_rng.choice([-1.0, 1.0], size=(h, w))
-        cr -= 1.5 * (1 if bit == 1 else -1) * pn
+        cr -= 1.2 * (1 if bit == 1 else -1) * pn
     ycrcb[:, :, 1] = np.clip(cr, 0, 255).astype(np.uint8)
 
     result = cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2BGR)
