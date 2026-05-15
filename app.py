@@ -5,6 +5,8 @@ import cv2
 import base64
 import tempfile
 
+import json
+
 from watermark_logic import (
     encode_image, decode_image, remove_watermark,
     compute_trust_score, _adaptive_strength, _password_to_seed,
@@ -15,13 +17,12 @@ from video_engine import (
     extract_single_frame, get_frame_trust_score, extract_frames,
     reassemble_video, extract_audio, HAS_FFMPEG,
 )
-from tamper_detection import (
-    generate_tamper_map, get_tamper_summary,
-    generate_frequency_spectrum, generate_before_after_spectrum,
-    generate_dct_block_viz, generate_ela, generate_noise_analysis,
-    generate_bitplane,
-)
+from tamper_detection import generate_tamper_map, get_tamper_summary
 from certificate import generate_certificate, HAS_FPDF
+from signature_registry import (
+    register_signature, get_key_for_signature,
+    list_signatures, signature_exists,
+)
 from translations import LANGS, RTL_LANGS, t
 
 # ─────────────────────────────────────────
@@ -557,15 +558,21 @@ with header_col:
     </div>
     """, unsafe_allow_html=True)
 
+def _on_lang_change():
+    st.session_state.lang = LANGS[st.session_state._lang_selector]
+
 with lang_col:
     st.markdown("<br>", unsafe_allow_html=True)
-    selected_lang_label = st.selectbox(
+    # Find current language display name
+    _lang_display = [k for k, v in LANGS.items() if v == st.session_state.lang][0]
+    st.selectbox(
         "🌐",
         options=list(LANGS.keys()),
-        index=list(LANGS.values()).index(st.session_state.lang),
+        index=list(LANGS.keys()).index(_lang_display),
         label_visibility="collapsed",
+        key="_lang_selector",
+        on_change=_on_lang_change,
     )
-    st.session_state.lang = LANGS[selected_lang_label]
     lang = st.session_state.lang
 
 # ─────────────────────────────────────────
@@ -594,16 +601,18 @@ with tab_embed:
             key="embed_upload",
         )
 
-        secret = st.text_area(
-            t("secret_label", lang),
-            placeholder="e.g.  CAM-001 | 2026-05-14 | UNIT-7",
-            height=80,
+        secret = st.text_input(
+            t("signature_name_label", lang),
+            placeholder="e.g.  CAM-001-2026",
+            key="embed_secret",
         )
         password = st.text_input(
-            t("password_label", lang),
+            t("encryption_key_label", lang),
             type="password", placeholder="••••••••", key="embed_pass",
         )
 
+        # Check for double signing
+        _already_signed = False
         if uploaded:
             is_video = uploaded.name.lower().endswith(".mp4")
             ext = "mp4" if is_video else "png"
@@ -612,26 +621,24 @@ with tab_embed:
             with open(in_path, "wb") as f:
                 f.write(uploaded.getbuffer())
 
-            # Strength meter
+            # Check if file already has a watermark (try all known signatures)
             if not is_video:
-                img_tmp = cv2.imread(in_path)
-                if img_tmp is not None:
-                    ih, iw = img_tmp.shape[:2]
-                    strength = _adaptive_strength(ih, iw)
-                    max_bits = (ih // 8) * (iw // 8)
-                    bits_needed = len(_prepare_bits(secret)) if secret else 0
-                    st.markdown(f'<div class="section-title">{t("strength_label", lang)}</div>',
-                                unsafe_allow_html=True)
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric(t("strength_label", lang), f"{strength:.0f}")
-                    c2.metric(t("capacity_label", lang), f"{max_bits}")
-                    c3.metric("Resolution", f"{iw}x{ih}")
-                    if bits_needed > 0:
-                        usage = min(100, int(bits_needed / max_bits * 100))
-                        st.progress(usage)
-                        st.caption(f"{bits_needed}/{max_bits} bits ({usage}%)")
+                known_sigs = list_signatures()
+                for sig_name in known_sigs:
+                    sig_key = get_key_for_signature(sig_name)
+                    check_result = decode_image(in_path, sig_key)
+                    if "✅" in check_result:
+                        _already_signed = True
+                        st.error(f"⛔ {t('already_signed', lang)}")
+                        st.markdown(f"""
+                        <div class="msg-card animate-in">
+                            <div class="msg-label">{t('embedded_signature', lang)}</div>
+                            <div class="msg-text">{sig_name}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        break
 
-        if uploaded and secret:
+        if uploaded and secret and password and not _already_signed:
             if st.button(t("btn_embed", lang), key="do_embed"):
                 if is_video:
                     progress_bar = st.progress(0)
@@ -648,7 +655,10 @@ with tab_embed:
                         result = encode_image(in_path, secret, out_path, password)
 
                 if "✅" in result:
+                    # Save to registry
+                    register_signature(secret, password)
                     st.success(result)
+                    st.info(f"📋 {t('signature_saved', lang)}: **{secret}**")
                     st.session_state["embed_done"] = True
                     st.session_state["embed_in"] = in_path
                     st.session_state["embed_out"] = out_path
@@ -697,95 +707,6 @@ with tab_embed:
                         file_name="veriframe_watermarked.png", mime="image/png",
                     )
 
-                # ── Forensic Visualization Suite ──
-                with st.expander(t("forensic_label", lang)):
-                    forensic_tab = st.radio(
-                        "Analysis Type",
-                        [
-                            t("forensic_spectrum", lang),
-                            t("forensic_ela", lang),
-                            t("forensic_noise", lang),
-                            t("forensic_dct", lang),
-                            t("forensic_bitplane", lang),
-                        ],
-                        horizontal=True,
-                        label_visibility="collapsed",
-                    )
-
-                    in_path = st.session_state["embed_in"]
-                    out_path = st.session_state["embed_out"]
-
-                    if forensic_tab == t("forensic_spectrum", lang):
-                        st.markdown(f"""<div class="forensic-info" style="border-color:var(--cyan);">
-                            {t("forensic_spectrum_desc", lang)}</div>""", unsafe_allow_html=True)
-                        spec = generate_before_after_spectrum(in_path, out_path)
-                        if spec is not None:
-                            st.image(_cv2_to_rgb(spec), use_container_width=True)
-
-                    elif forensic_tab == t("forensic_ela", lang):
-                        st.markdown(f"""<div class="forensic-info" style="border-color:var(--yellow);">
-                            {t("forensic_ela_desc", lang)}</div>""", unsafe_allow_html=True)
-                        ela_col1, ela_col2 = st.columns(2)
-                        with ela_col1:
-                            st.caption(t("original_label", lang))
-                            ela_orig = generate_ela(in_path)
-                            if ela_orig is not None:
-                                st.image(_cv2_to_rgb(ela_orig), use_container_width=True)
-                        with ela_col2:
-                            st.caption(t("watermarked_label", lang))
-                            ela_wm = generate_ela(out_path)
-                            if ela_wm is not None:
-                                st.image(_cv2_to_rgb(ela_wm), use_container_width=True)
-
-                    elif forensic_tab == t("forensic_noise", lang):
-                        st.markdown(f"""<div class="forensic-info" style="border-color:var(--purple);">
-                            {t("forensic_noise_desc", lang)}</div>""", unsafe_allow_html=True)
-                        noise_col1, noise_col2 = st.columns(2)
-                        with noise_col1:
-                            st.caption(t("original_label", lang))
-                            noise_orig = generate_noise_analysis(in_path)
-                            if noise_orig is not None:
-                                st.image(_cv2_to_rgb(noise_orig), use_container_width=True)
-                        with noise_col2:
-                            st.caption(t("watermarked_label", lang))
-                            noise_wm = generate_noise_analysis(out_path)
-                            if noise_wm is not None:
-                                st.image(_cv2_to_rgb(noise_wm), use_container_width=True)
-
-                    elif forensic_tab == t("forensic_dct", lang):
-                        st.markdown(f"""<div class="forensic-info" style="border-color:var(--green);">
-                            {t("forensic_dct_desc", lang)}</div>""", unsafe_allow_html=True)
-                        img_tmp = cv2.imread(out_path)
-                        if img_tmp is not None:
-                            max_br = img_tmp.shape[0] // 8 - 1
-                            max_bc = img_tmp.shape[1] // 8 - 1
-                            dct_c1, dct_c2 = st.columns(2)
-                            with dct_c1:
-                                block_r = st.slider("Block Row", 0, max(0, max_br), 10, key="dct_br")
-                            with dct_c2:
-                                block_c = st.slider("Block Col", 0, max(0, max_bc), 10, key="dct_bc")
-                            dct_viz = generate_dct_block_viz(out_path, block_r, block_c)
-                            if dct_viz is not None:
-                                st.image(_cv2_to_rgb(dct_viz),
-                                         caption=f"DCT Block ({block_r},{block_c})",
-                                         use_container_width=True)
-
-                    elif forensic_tab == t("forensic_bitplane", lang):
-                        st.markdown(f"""<div class="forensic-info" style="border-color:var(--orange);">
-                            {t("forensic_bitplane_desc", lang)}</div>""", unsafe_allow_html=True)
-                        bit_num = st.slider("Bit Plane (0=LSB, 7=MSB)", 0, 7, 0, key="bitplane")
-                        bp_col1, bp_col2 = st.columns(2)
-                        with bp_col1:
-                            st.caption(t("original_label", lang))
-                            bp_orig = generate_bitplane(in_path, bit_num)
-                            if bp_orig is not None:
-                                st.image(_cv2_to_rgb(bp_orig), use_container_width=True)
-                        with bp_col2:
-                            st.caption(t("watermarked_label", lang))
-                            bp_wm = generate_bitplane(out_path, bit_num)
-                            if bp_wm is not None:
-                                st.image(_cv2_to_rgb(bp_wm), use_container_width=True)
-
 
 # ══════════════════════════════════════════
 #  TAB 2 — VERIFY
@@ -802,10 +723,20 @@ with tab_verify:
             type=["png", "jpg", "jpeg", "mp4"],
             key="verify_upload",
         )
-        password_v = st.text_input(
-            t("password_label", lang),
-            type="password", placeholder="••••••••", key="verify_pass",
-        )
+
+        # Select signature from registry (user doesn't need to know the password)
+        known_sigs = list_signatures()
+        password_v = ""
+
+        if known_sigs:
+            selected_sig = st.selectbox(
+                t("verify_signature_select", lang),
+                options=known_sigs,
+                key="verify_sig_select",
+            )
+            password_v = get_key_for_signature(selected_sig) if selected_sig else ""
+        else:
+            st.info(t("no_signatures", lang))
 
         if uploaded_v:
             is_video = uploaded_v.name.lower().endswith(".mp4")
@@ -820,7 +751,7 @@ with tab_verify:
                 st.image(v_path, caption=t("preview_label", lang),
                          use_container_width=True)
 
-            if st.button(t("btn_verify", lang), key="do_verify"):
+            if password_v and st.button(t("btn_verify", lang), key="do_verify"):
                 if is_video:
                     progress_bar = st.progress(0)
                     status_text = st.empty()
@@ -850,11 +781,9 @@ with tab_verify:
                     with st.spinner("Analyzing..."):
                         result_msg = decode_image(v_path, password_v)
                         trust_data = compute_trust_score(v_path, password_v)
-                        tamper_data = generate_tamper_map(v_path, password_v)
 
                     st.session_state["verify_result"] = result_msg
                     st.session_state["verify_trust"] = trust_data
-                    st.session_state["verify_tamper"] = tamper_data
                     st.session_state["verify_is_video"] = False
                     st.session_state["verify_path"] = v_path
 
@@ -935,105 +864,6 @@ with tab_verify:
                         unsafe_allow_html=True,
                     )
 
-                # Frame slider
-                st.markdown(f'<div class="section-title" style="margin-top:1.2rem;">'
-                            f'Frame Navigator</div>', unsafe_allow_html=True)
-                info_v = _get_video_info(v_path)
-                total_frames = max(1, info_v["total_frames"] - 1)
-                selected_frame = st.slider("Frame", 0, total_frames, 0, key="frame_slider")
-
-                frame_img = extract_single_frame(v_path, selected_frame)
-                if frame_img is not None:
-                    st.image(_cv2_to_rgb(frame_img),
-                             caption=f"Frame {selected_frame} / {total_frames}",
-                             use_container_width=True)
-                    if st.button(f"Analyze Frame {selected_frame}", key="analyze_single_frame"):
-                        with st.spinner("Analyzing frame..."):
-                            frame_trust = get_frame_trust_score(v_path, selected_frame, password_v)
-                        f_score = frame_trust.get("score", 0)
-                        f_cls = _trust_color(f_score)
-                        f_found = frame_trust.get("found", False)
-                        f_msg = frame_trust.get("message", "")
-                        st.markdown(
-                            f'<span class="{f_cls}" style="font-size:1.5rem;font-weight:900;'
-                            f'font-family:JetBrains Mono,monospace;">{f_score}%</span>'
-                            f'&nbsp; {"✅ " + f_msg if f_found else "❌ Not found"}',
-                            unsafe_allow_html=True,
-                        )
-
-            # ── Tamper Detection ──
-            tamper_data = st.session_state.get("verify_tamper")
-            if tamper_data and tamper_data.get("overlay") is not None:
-                st.markdown('<div class="vf-footer-line" style="margin:1.2rem 0;"></div>',
-                            unsafe_allow_html=True)
-                st.markdown(f'<div class="section-title">{t("tamper_map", lang)}</div>',
-                            unsafe_allow_html=True)
-
-                summary = tamper_data.get("summary")
-                if summary is None:
-                    raw_map = tamper_data.get("raw_map")
-                    summary = get_tamper_summary(raw_map) if raw_map is not None else {}
-                severity = summary.get("severity", "pristine")
-                tamper_pct = summary.get("tamper_pct", 0)
-                regions = summary.get("regions", [])
-                num_regions = summary.get("num_regions", 0)
-
-                sev_text = t(f"severity_{severity}", lang)
-                sev_cls = _severity_class(severity)
-                sev_icons = {"pristine": "✅", "minor": "⚠️", "moderate": "🚨", "severe": "🛑"}
-
-                st.markdown(f"""
-                <div class="severity-banner sev-{severity} animate-in">
-                    <span class="sev-icon">{sev_icons.get(severity, '')}</span>
-                    <div>
-                        <div class="sev-title {sev_cls}">{sev_text}</div>
-                        <div class="sev-detail">
-                            {t('tamper_pct', lang)}: <strong>{tamper_pct}%</strong>
-                            &nbsp;&middot;&nbsp;
-                            {t('tamper_regions', lang)}: <strong>{num_regions}</strong>
-                        </div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                view_mode = st.radio(
-                    t("tamper_view_mode", lang),
-                    [t("tamper_view_heatmap", lang), t("tamper_view_regions", lang)],
-                    horizontal=True,
-                    label_visibility="collapsed",
-                )
-
-                if view_mode == t("tamper_view_regions", lang) and tamper_data.get("overlay_annotated") is not None:
-                    st.image(_cv2_to_rgb(tamper_data["overlay_annotated"]),
-                             use_container_width=True)
-                else:
-                    st.image(_cv2_to_rgb(tamper_data["overlay"]),
-                             use_container_width=True)
-
-                # Legend
-                st.markdown("""
-                <div class="legend-row">
-                    <span class="legend-item"><span class="legend-dot" style="background:#22c55e;"></span>Intact</span>
-                    <span class="legend-item"><span class="legend-dot" style="background:#f59e0b;"></span>Minor</span>
-                    <span class="legend-item"><span class="legend-dot" style="background:#ef4444;"></span>Tampered</span>
-                </div>
-                """, unsafe_allow_html=True)
-
-                if regions:
-                    with st.expander(f"{t('tamper_regions', lang)} ({num_regions})", expanded=False):
-                        for idx, region in enumerate(regions[:8]):
-                            rx, ry, rw, rh = region["x"], region["y"], region["w"], region["h"]
-                            img_h, img_w = tamper_data["overlay"].shape[:2]
-                            area_pct = round(rw * rh / max(1, img_w * img_h) * 100, 1)
-                            st.markdown(
-                                f'<div class="region-tag">'
-                                f'<span class="region-num">#{idx+1}</span>'
-                                f'{rw}x{rh} px'
-                                f'<span class="region-dim">at ({rx},{ry}) &middot; {area_pct}%</span>'
-                                f'</div>',
-                                unsafe_allow_html=True,
-                            )
-
             # ── Certificate ──
             if found and HAS_FPDF:
                 st.markdown('<div class="vf-footer-line" style="margin:1.2rem 0;"></div>',
@@ -1043,17 +873,8 @@ with tab_verify:
 
                 v_path = st.session_state.get("verify_path", "")
                 cert_path = "tmp/certificate.pdf"
-
-                cert_tamper_pct = -1
-                cert_severity = ""
-                td = st.session_state.get("verify_tamper")
-                if td and td.get("summary"):
-                    cert_tamper_pct = td["summary"].get("tamper_pct", -1)
-                    cert_severity = td["summary"].get("severity", "")
-
                 cert_file = generate_certificate(
                     v_path, message, score, password_v, cert_path,
-                    tamper_pct=cert_tamper_pct, severity=cert_severity,
                 )
                 if cert_file and os.path.exists(cert_file):
                     with open(cert_file, "rb") as f:
