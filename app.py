@@ -76,10 +76,21 @@ html, body, [class*="css"] {
 #MainMenu, footer, header { visibility: hidden; }
 
 .block-container {
-    padding: 0.8rem 2.5rem 2rem 2.5rem;
-    max-width: 1260px;
-    margin: 0 auto;
+    padding: 1rem 3rem 2rem 3rem !important;
+    max-width: 1200px !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
     background: var(--bg-primary);
+}
+[data-testid="stAppViewBlockContainer"] {
+    max-width: 1200px !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+}
+section[data-testid="stSidebar"] + div .block-container,
+.main .block-container {
+    margin-left: auto !important;
+    margin-right: auto !important;
 }
 
 /* ── RTL Support — dynamic ── */
@@ -106,8 +117,9 @@ html, body, [class*="css"] {
 /* ── Hero header ── */
 .hero {
     position: relative;
-    padding: 1.8rem 0 1.2rem 0;
-    margin-bottom: 1rem;
+    padding: 2rem 0 1.4rem 0;
+    margin-bottom: 1.2rem;
+    text-align: center;
 }
 .hero::after {
     content: '';
@@ -147,6 +159,7 @@ html, body, [class*="css"] {
     gap: 6px;
     flex-wrap: wrap;
     margin: 0.8rem 0 0.4rem 0;
+    justify-content: center;
 }
 .tech-badge {
     display: inline-flex; align-items: center; gap: 5px;
@@ -473,6 +486,11 @@ hr { border-color: rgba(56,189,248,0.1) !important; }
     border: 1px solid var(--border);
 }
 
+/* ── Column centering ── */
+[data-testid="column"] > div {
+    width: 100%;
+}
+
 /* ── Animations ── */
 @keyframes fadeInUp {
     from { opacity: 0; transform: translateY(12px); }
@@ -484,6 +502,14 @@ hr { border-color: rgba(56,189,248,0.1) !important; }
 }
 .animate-in { animation: fadeInUp 0.5s ease-out; }
 .pulse { animation: pulse-glow 2s ease-in-out infinite; }
+
+/* ── Tab content centering ── */
+.stTabs [data-baseweb="tab-panel"] {
+    padding-top: 1.2rem;
+}
+.stTabs [data-baseweb="tab-list"] {
+    justify-content: center;
+}
 
 /* ── Footer ── */
 .vf-footer {
@@ -553,32 +579,11 @@ def _cv2_to_rgb(img):
 # ─────────────────────────────────────────
 #  Hero Header
 # ─────────────────────────────────────────
-header_col, lang_col = st.columns([4, 1])
+lang = st.session_state.lang
 
-with header_col:
-    lang = st.session_state.lang
-    st.markdown(f"""
-    <div class="hero animate-in">
-        <div>
-            <span class="hero-logo">
-                <span class="hero-shield">🛡️</span>VeriFrame
-            </span>
-            <div class="hero-tagline">{t('app_subtitle', lang)}</div>
-        </div>
-        <div class="tech-row">
-            <span class="tech-badge tb-dct"><span class="tb-dot"></span>DCT Frequency</span>
-            <span class="tech-badge tb-ss"><span class="tb-dot"></span>Spread Spectrum</span>
-            <span class="tech-badge tb-ecc"><span class="tb-dot"></span>Reed-Solomon ECC</span>
-            <span class="tech-badge tb-sync"><span class="tb-dot"></span>Sync Markers</span>
-            <span class="tech-badge tb-dct"><span class="tb-dot"></span>Invisible QR</span>
-            <span class="tech-badge tb-ss"><span class="tb-dot"></span>CNN Steganalysis</span>
-            <span class="tech-badge tb-ecc"><span class="tb-dot"></span>AI Forensic Agent</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
+# Language selector - top right
+_, lang_col = st.columns([5, 1])
 with lang_col:
-    st.markdown("<br>", unsafe_allow_html=True)
     selected_lang_label = st.selectbox(
         "🌐",
         options=list(LANGS.keys()),
@@ -587,6 +592,24 @@ with lang_col:
     )
     st.session_state.lang = LANGS[selected_lang_label]
     lang = st.session_state.lang
+
+st.markdown(f"""
+<div class="hero animate-in">
+    <span class="hero-logo">
+        <span class="hero-shield">🛡️</span>VeriFrame
+    </span>
+    <div class="hero-tagline">{t('app_subtitle', lang)}</div>
+    <div class="tech-row">
+        <span class="tech-badge tb-dct"><span class="tb-dot"></span>DCT Frequency</span>
+        <span class="tech-badge tb-ss"><span class="tb-dot"></span>Spread Spectrum</span>
+        <span class="tech-badge tb-ecc"><span class="tb-dot"></span>Reed-Solomon ECC</span>
+        <span class="tech-badge tb-sync"><span class="tb-dot"></span>Sync Markers</span>
+        <span class="tech-badge tb-dct"><span class="tb-dot"></span>Invisible QR</span>
+        <span class="tech-badge tb-ss"><span class="tb-dot"></span>CNN Steganalysis</span>
+        <span class="tech-badge tb-ecc"><span class="tb-dot"></span>AI Forensic Agent</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # Apply RTL class for Hebrew/Arabic
 if lang in RTL_LANGS:
