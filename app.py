@@ -22,6 +22,10 @@ from tamper_detection import (
     generate_bitplane,
 )
 from certificate import generate_certificate, HAS_FPDF
+from robustness import run_robustness_benchmark
+from invisible_qr import extract_qr_blind, HAS_QR as HAS_INVISIBLE_QR
+from cnn_detector import detect_watermark, calibrate_detector, get_srm_visualization
+from ai_agent import run_ai_analysis, format_report_html
 from translations import LANGS, RTL_LANGS, t
 
 # ─────────────────────────────────────────
@@ -72,10 +76,23 @@ html, body, [class*="css"] {
 #MainMenu, footer, header { visibility: hidden; }
 
 .block-container {
-    padding: 0.8rem 2rem 2rem 2rem;
+    padding: 0.8rem 2.5rem 2rem 2.5rem;
     max-width: 1260px;
+    margin: 0 auto;
     background: var(--bg-primary);
 }
+
+/* ── RTL Support — dynamic ── */
+.rtl-mode .block-container { direction: rtl; text-align: right; }
+.rtl-mode .section-title { flex-direction: row-reverse; }
+.rtl-mode .tech-row { flex-direction: row-reverse; }
+.rtl-mode .severity-banner { flex-direction: row-reverse; }
+.rtl-mode .layer-bar { flex-direction: row-reverse; }
+.rtl-mode .layer-label { text-align: left; }
+.rtl-mode .legend-row { flex-direction: row-reverse; }
+.rtl-mode .msg-card { text-align: right; }
+.rtl-mode .region-tag { flex-direction: row-reverse; }
+.rtl-mode .forensic-info { border-left: none; border-right: 3px solid; }
 
 /* ── Animated background mesh ── */
 .stApp {
@@ -553,6 +570,9 @@ with header_col:
             <span class="tech-badge tb-ss"><span class="tb-dot"></span>Spread Spectrum</span>
             <span class="tech-badge tb-ecc"><span class="tb-dot"></span>Reed-Solomon ECC</span>
             <span class="tech-badge tb-sync"><span class="tb-dot"></span>Sync Markers</span>
+            <span class="tech-badge tb-dct"><span class="tb-dot"></span>Invisible QR</span>
+            <span class="tech-badge tb-ss"><span class="tb-dot"></span>CNN Steganalysis</span>
+            <span class="tech-badge tb-ecc"><span class="tb-dot"></span>AI Forensic Agent</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -568,13 +588,26 @@ with lang_col:
     st.session_state.lang = LANGS[selected_lang_label]
     lang = st.session_state.lang
 
+# Apply RTL class for Hebrew/Arabic
+if lang in RTL_LANGS:
+    st.markdown('<style>.block-container{direction:rtl;text-align:right;}'
+                '.section-title{flex-direction:row-reverse;}'
+                '.tech-row{flex-direction:row-reverse;}'
+                '.severity-banner{flex-direction:row-reverse;}'
+                '.layer-bar{flex-direction:row-reverse;}'
+                '.layer-label{text-align:left;}'
+                '.forensic-info{border-left:none;border-right:3px solid;}'
+                '</style>', unsafe_allow_html=True)
+
 # ─────────────────────────────────────────
 #  Tabs
 # ─────────────────────────────────────────
-tab_embed, tab_verify, tab_remove = st.tabs([
+tab_embed, tab_verify, tab_remove, tab_benchmark, tab_ai = st.tabs([
     f"  {t('tab_embed', lang)}  ",
     f"  {t('tab_verify', lang)}  ",
     f"  {t('tab_remove', lang)}  ",
+    f"  {t('tab_benchmark', lang)}  ",
+    f"  {t('tab_ai_agent', lang)}  ",
 ])
 
 
@@ -707,6 +740,8 @@ with tab_embed:
                             t("forensic_noise", lang),
                             t("forensic_dct", lang),
                             t("forensic_bitplane", lang),
+                            t("forensic_qr", lang),
+                            t("forensic_cnn", lang),
                         ],
                         horizontal=True,
                         label_visibility="collapsed",
@@ -785,6 +820,61 @@ with tab_embed:
                             bp_wm = generate_bitplane(out_path, bit_num)
                             if bp_wm is not None:
                                 st.image(_cv2_to_rgb(bp_wm), use_container_width=True)
+
+                    elif forensic_tab == t("forensic_qr", lang):
+                        st.markdown(f"""<div class="forensic-info" style="border-color:#22d3ee;">
+                            {t("forensic_qr_desc", lang)}</div>""", unsafe_allow_html=True)
+                        qr_viz = extract_qr_blind(cv2.imread(out_path),
+                                                  st.session_state.get("embed_pass", ""))
+                        if qr_viz is not None:
+                            st.image(_cv2_to_rgb(qr_viz),
+                                     caption="Invisible QR — Extracted Pattern",
+                                     use_container_width=True)
+                        else:
+                            st.info("QR extraction requires the qrcode library.")
+
+                    elif forensic_tab == t("forensic_cnn", lang):
+                        st.markdown(f"""<div class="forensic-info" style="border-color:#f472b6;">
+                            {t("forensic_cnn_desc", lang)}</div>""", unsafe_allow_html=True)
+
+                        # Calibrate with current pair
+                        cal = calibrate_detector(in_path, out_path)
+
+                        cnn_c1, cnn_c2 = st.columns(2)
+                        with cnn_c1:
+                            st.caption(t("original_label", lang))
+                            det_clean = detect_watermark(in_path)
+                            prob_clean = det_clean["probability"]
+                            st.markdown(f"""
+                            <div style="text-align:center;padding:0.8rem;">
+                                <div style="font-family:'JetBrains Mono',monospace;
+                                            font-size:2rem;font-weight:900;
+                                            color:{'var(--green)' if prob_clean < 0.4 else 'var(--red)'};">
+                                    {int(prob_clean*100)}%</div>
+                                <div style="font-size:0.75rem;color:var(--slate);">
+                                    Watermark Probability</div>
+                            </div>""", unsafe_allow_html=True)
+
+                        with cnn_c2:
+                            st.caption(t("watermarked_label", lang))
+                            det_wm = detect_watermark(out_path)
+                            prob_wm = det_wm["probability"]
+                            st.markdown(f"""
+                            <div style="text-align:center;padding:0.8rem;">
+                                <div style="font-family:'JetBrains Mono',monospace;
+                                            font-size:2rem;font-weight:900;
+                                            color:{'var(--green)' if prob_wm >= 0.6 else 'var(--yellow)'};">
+                                    {int(prob_wm*100)}%</div>
+                                <div style="font-size:0.75rem;color:var(--slate);">
+                                    Watermark Probability</div>
+                            </div>""", unsafe_allow_html=True)
+
+                        # SRM visualization
+                        srm_viz = get_srm_visualization(out_path)
+                        if srm_viz is not None:
+                            st.image(_cv2_to_rgb(srm_viz),
+                                     caption="SRM Filter Responses — Watermark Noise Residuals",
+                                     use_container_width=True)
 
 
 # ══════════════════════════════════════════
@@ -1122,6 +1212,246 @@ with tab_remove:
                 )
 
 
+# ══════════════════════════════════════════
+#  TAB 4 — ROBUSTNESS BENCHMARK
+# ══════════════════════════════════════════
+with tab_benchmark:
+    st.markdown(f'<div class="section-title">{t("tab_benchmark", lang)}</div>',
+                unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div class="forensic-info" style="border-color:var(--cyan);">
+        {t("benchmark_desc", lang)}
+    </div>
+    """, unsafe_allow_html=True)
+
+    bench_left, bench_right = st.columns([1, 2], gap="large")
+
+    with bench_left:
+        uploaded_b = st.file_uploader(
+            t("upload_image", lang),
+            type=["png", "jpg", "jpeg"],
+            key="bench_upload",
+        )
+        bench_secret = st.text_input(
+            t("secret_label", lang),
+            value="BENCHMARK-2026",
+            key="bench_secret",
+        )
+        bench_password = st.text_input(
+            t("password_label", lang),
+            type="password", placeholder="••••••••", key="bench_pass",
+        )
+
+        if uploaded_b and bench_secret:
+            if st.button(t("btn_benchmark", lang), key="do_benchmark"):
+                b_in = "tmp/bench_input.png"
+                with open(b_in, "wb") as f:
+                    f.write(uploaded_b.getbuffer())
+
+                progress_bar = st.progress(0)
+                with st.spinner(t("benchmark_running", lang)):
+                    bench_result = run_robustness_benchmark(
+                        b_in, bench_secret, bench_password,
+                        progress_callback=lambda p: progress_bar.progress(min(p, 1.0)),
+                    )
+                progress_bar.progress(1.0)
+                st.session_state["bench_result"] = bench_result
+
+    with bench_right:
+        if st.session_state.get("bench_result"):
+            br = st.session_state["bench_result"]
+            survived = br["survived"]
+            total = br["total_attacks"]
+            rate = br["survival_rate"]
+            acc = br["accuracy_rate"]
+
+            # Summary cards
+            s1, s2, s3 = st.columns(3)
+            s1.metric(t("benchmark_survival", lang), f"{rate}%")
+            s2.metric(t("benchmark_accuracy", lang), f"{acc}%")
+            s3.metric(t("benchmark_attacks", lang), f"{survived}/{total}")
+
+            # Overall score bar
+            rate_color = "var(--green)" if rate >= 70 else "var(--yellow)" if rate >= 40 else "var(--red)"
+            st.markdown(f"""
+            <div style="margin:1rem 0;">
+                <div class="layer-track" style="height:10px;">
+                    <div class="layer-fill" style="width:{rate}%;
+                         background:linear-gradient(90deg, #0ea5e9, {'#22c55e' if rate>=70 else '#f59e0b' if rate>=40 else '#ef4444'});
+                         box-shadow:0 0 12px {rate_color};height:100%;border-radius:5px;">
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Results table
+            st.markdown(f'<div class="section-title" style="margin-top:1rem;">'
+                        f'{t("benchmark_results", lang)}</div>', unsafe_allow_html=True)
+
+            # Group by attack type
+            for r in br["results"]:
+                icon = "✅" if r["found"] else "❌"
+                correct_icon = " ✓" if r["correct"] else ""
+                score_cls = _trust_color(r["score"])
+
+                border_color = "rgba(34,197,94,0.3)" if r["found"] else "rgba(239,68,68,0.3)"
+                bg = "rgba(34,197,94,0.04)" if r["found"] else "rgba(239,68,68,0.04)"
+                st.markdown(f"""
+                <div style="background:{bg};border:1px solid {border_color};
+                            border-radius:10px;padding:0.5rem 0.8rem;margin-bottom:4px;
+                            display:flex;justify-content:space-between;align-items:center;
+                            font-size:0.82rem;">
+                    <span>{icon} {r['description']}</span>
+                    <span class="{score_cls}" style="font-family:'JetBrains Mono',monospace;
+                                 font-weight:700;">{r['score']}%{correct_icon}</span>
+                </div>
+                """, unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════
+#  TAB 5 — AI FORENSIC AGENT
+# ══════════════════════════════════════════
+with tab_ai:
+    st.markdown(f'<div class="section-title">{t("tab_ai_agent", lang)}</div>',
+                unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div class="forensic-info" style="border-color:var(--indigo);">
+        {t("ai_agent_desc", lang)}
+    </div>
+    """, unsafe_allow_html=True)
+
+    ai_left, ai_right = st.columns([1, 2], gap="large")
+
+    with ai_left:
+        uploaded_ai = st.file_uploader(
+            t("upload_media", lang),
+            type=["png", "jpg", "jpeg"],
+            key="ai_upload",
+        )
+        ai_password = st.text_input(
+            t("password_label", lang),
+            type="password", placeholder="••••••••", key="ai_pass",
+        )
+
+        if uploaded_ai:
+            ai_path = "tmp/ai_input.png"
+            with open(ai_path, "wb") as f:
+                f.write(uploaded_ai.getbuffer())
+            st.image(ai_path, caption=t("preview_label", lang),
+                     use_container_width=True)
+
+            if st.button(t("ai_agent_run", lang), key="do_ai_agent"):
+                with st.spinner(t("ai_agent_running", lang)):
+                    ai_report = run_ai_analysis(ai_path, ai_password)
+                st.session_state["ai_report"] = ai_report
+
+    with ai_right:
+        if st.session_state.get("ai_report"):
+            report = st.session_state["ai_report"]
+
+            # Animated header
+            risk = report.get("risk_level", "UNKNOWN")
+            risk_colors = {
+                "LOW": "#22c55e", "MEDIUM": "#f59e0b",
+                "HIGH": "#fb923c", "CRITICAL": "#ef4444", "UNKNOWN": "#64748b",
+            }
+            risk_color = risk_colors.get(risk, "#64748b")
+
+            st.markdown(f"""
+            <div style="background:rgba(15,23,42,0.6);border:1px solid rgba(129,140,248,0.2);
+                        border-radius:16px;padding:1.5rem;margin-bottom:1rem;
+                        border-top:3px solid {risk_color};">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                        <div style="font-size:0.62rem;text-transform:uppercase;letter-spacing:2px;
+                                    color:var(--slate);margin-bottom:6px;">
+                            🤖 {t('ai_agent_report', lang)}</div>
+                        <div style="font-size:1.15rem;font-weight:800;color:var(--light);">
+                            {report.get('summary', 'Analysis complete')}</div>
+                    </div>
+                    <div style="background:{risk_color};color:white;padding:6px 18px;
+                                border-radius:100px;font-size:0.72rem;font-weight:800;
+                                letter-spacing:1.2px;box-shadow:0 0 15px {risk_color}40;">
+                        {risk} RISK</div>
+                </div>
+                <div style="font-size:0.68rem;color:var(--slate);margin-top:8px;">
+                    {report.get('timestamp', '')}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Render each section as a card
+            status_styles = {
+                "success": ("var(--green)", "rgba(34,197,94,0.06)", "✅"),
+                "warning": ("var(--yellow)", "rgba(245,158,11,0.06)", "⚠️"),
+                "error":   ("var(--red)", "rgba(239,68,68,0.06)", "🛑"),
+                "info":    ("var(--cyan)", "rgba(56,189,248,0.04)", "ℹ️"),
+            }
+
+            for section in report.get("sections", []):
+                status = section.get("status", "info")
+                color, bg, icon = status_styles.get(status, status_styles["info"])
+
+                findings_html = ""
+                for finding in section.get("findings", []):
+                    findings_html += f'<div style="padding:3px 0;font-size:0.82rem;color:var(--light);">• {finding}</div>'
+
+                st.markdown(f"""
+                <div style="background:{bg};border:1px solid {color}18;
+                            border-radius:12px;padding:0.85rem 1.1rem;margin-bottom:0.5rem;
+                            border-left:3px solid {color};">
+                    <div style="font-weight:700;font-size:0.82rem;color:{color};
+                                margin-bottom:0.3rem;">
+                        {icon} {section['title']}</div>
+                    {findings_html}
+                </div>
+                """, unsafe_allow_html=True)
+
+            # Recommendations
+            recs = report.get("recommendations", [])
+            if recs:
+                recs_html = ""
+                for r in recs:
+                    recs_html += f'<div style="padding:3px 0;font-size:0.82rem;color:var(--light);">→ {r}</div>'
+                st.markdown(f"""
+                <div style="background:rgba(129,140,248,0.05);border:1px solid rgba(129,140,248,0.18);
+                            border-radius:12px;padding:0.85rem 1.1rem;margin-top:0.5rem;">
+                    <div style="font-weight:700;font-size:0.82rem;color:var(--indigo);
+                                margin-bottom:0.4rem;">
+                        💡 Recommendations</div>
+                    {recs_html}
+                </div>
+                """, unsafe_allow_html=True)
+
+            # Raw data expander
+            with st.expander("📊 Raw Analysis Data"):
+                raw = report.get("raw_data", {})
+                if raw.get("stats"):
+                    s = raw["stats"]
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Resolution", s.get("resolution", "N/A"))
+                    c2.metric("Noise Level", s.get("noise_level", 0))
+                    c3.metric("Entropy", f"{s.get('entropy', 0)} bits")
+
+                if raw.get("cnn"):
+                    cnn = raw["cnn"]
+                    prob = cnn.get("probability", 0)
+                    st.markdown(f"""
+                    <div style="text-align:center;padding:0.6rem;background:rgba(15,23,42,0.5);
+                                border-radius:10px;margin-top:0.5rem;">
+                        <div style="font-size:0.68rem;color:var(--slate);text-transform:uppercase;
+                                    letter-spacing:1px;">CNN Watermark Probability</div>
+                        <div style="font-family:'JetBrains Mono',monospace;font-size:2rem;
+                                    font-weight:900;color:{'var(--green)' if prob >= 0.6 else 'var(--yellow)' if prob >= 0.4 else 'var(--slate)'};">
+                            {int(prob*100)}%</div>
+                        <div style="font-size:0.72rem;color:var(--slate);">
+                            {cnn.get('features_extracted', 0)} features
+                            (SRM: {cnn.get('srm_features', 0)} · DCT: {cnn.get('dct_features', 0)} · Channel: {cnn.get('channel_features', 0)})</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+
 # ─────────────────────────────────────────
 #  Footer
 # ─────────────────────────────────────────
@@ -1131,7 +1461,7 @@ st.markdown("""
     VeriFrame &nbsp;&middot;&nbsp; Invisible Digital Watermarking Engine<br>
     <span style="font-size:0.62rem; opacity:0.5;">
         DCT Frequency &middot; Spread Spectrum &middot; Reed-Solomon ECC &middot;
-        Sync Markers &middot; Password Encryption &middot; Tamper Detection
+        Sync Markers &middot; CNN Steganalysis &middot; AI Forensic Agent &middot; Tamper Detection
     </span>
 </div>
 """, unsafe_allow_html=True)

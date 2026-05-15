@@ -408,14 +408,22 @@ def encode_image(image_path: str, secret_data: str,
     # Sync markers first (on Y channel)
     ycrcb[:, :, 0] = _embed_sync_markers(ycrcb[:, :, 0], seed, strength + 10)
 
-    # Layer A on Y (luma)
+    # Layer A on Y (luma) — DCT frequency domain
     ycrcb[:, :, 0] = _embed_layer_a(ycrcb[:, :, 0], bits, seed, strength)
 
-    # Layer B on Cr (chroma) — first 256 bits
+    # Layer B on Cr (chroma) — Spread Spectrum
     short_bits = bits[:min(LAYER_B_BITS, len(bits))]
     ycrcb[:, :, 1] = _embed_layer_b(ycrcb[:, :, 1], short_bits, seed)
 
     result = cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2BGR)
+
+    # Layer C — Invisible QR code (spatial domain)
+    try:
+        from invisible_qr import embed_invisible_qr
+        result = embed_invisible_qr(result, secret_data, password, alpha=3.0)
+    except Exception:
+        pass  # Layer C is optional — graceful fallback
+
     cv2.imwrite(output_path, result, [cv2.IMWRITE_PNG_COMPRESSION, 0])
     return "✅ Watermark embedded successfully"
 
