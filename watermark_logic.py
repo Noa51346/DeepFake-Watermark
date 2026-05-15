@@ -23,10 +23,10 @@ def _password_to_key(password: str) -> bytes:
     return hashlib.sha256(password.encode()).digest()
 
 
-def _adaptive_strength(h: int, w: int, base: float = 25.0) -> float:
+def _adaptive_strength(h: int, w: int, base: float = 27.0) -> float:
     ref_area = 512 * 512
     area = h * w
-    return max(15.0, min(40.0, base * (ref_area / area) ** 0.3))
+    return max(16.0, min(42.0, base * (ref_area / area) ** 0.25))
 
 
 def _apply_ecc(data: bytes) -> bytes:
@@ -169,7 +169,7 @@ LAYER_B_BITS = 256
 
 
 def _embed_layer_b(cr: np.ndarray, bits: np.ndarray, seed: int,
-                   alpha: float = 1.2) -> np.ndarray:
+                   alpha: float = 1.5) -> np.ndarray:
     h, w = cr.shape
     cr_f = cr.astype(np.float64)
 
@@ -496,7 +496,7 @@ def remove_watermark(image_path: str, output_path: str,
     for i, bit in enumerate(bits_b):
         bit_rng = np.random.RandomState((seed ^ (i * 2654435761)) % (2**31))
         pn = bit_rng.choice([-1.0, 1.0], size=(h, w))
-        cr -= 1.2 * (1 if bit == 1 else -1) * pn
+        cr -= 1.5 * (1 if bit == 1 else -1) * pn
     ycrcb[:, :, 1] = np.clip(cr, 0, 255).astype(np.uint8)
 
     result = cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2BGR)
